@@ -10,19 +10,17 @@ import AVFoundation
 
 class CameraManager: ObservableObject {
     @Published var availableCameras: [AVCaptureDevice] = []
-    @Published var selectedCamera: AVCaptureDevice?
+    @Published var selectedCameras: Set<AVCaptureDevice> = []
     @Published var errorMessage: String?
     
     init() {
         print("CameraManager initialized")
-        // Don't discover cameras in init, wait for explicit call
     }
     
     func discoverCameras() {
         print("Starting camera discovery...")
         
         do {
-            // First check if we have permission
             let status = AVCaptureDevice.authorizationStatus(for: .video)
             print("Camera authorization status: \(status.rawValue)")
             
@@ -32,19 +30,15 @@ class CameraManager: ObservableObject {
                             userInfo: [NSLocalizedDescriptionKey: "Camera access not authorized. Current status: \(status.rawValue)"])
             }
             
-            // Clear existing cameras
             availableCameras = []
-            selectedCamera = nil
+            selectedCameras = []
             
-            // Try different device types available on macOS
             let deviceTypes: [AVCaptureDevice.DeviceType] = [
                 .builtInWideAngleCamera,
                 .external
             ]
             
             print("Creating discovery session with device types: \(deviceTypes)")
-            
-            // Create discovery session in a safe way
             let discoverySession = try AVCaptureDevice.DiscoverySession(
                 deviceTypes: deviceTypes,
                 mediaType: .video,
@@ -54,17 +48,18 @@ class CameraManager: ObservableObject {
             print("Discovery session created successfully")
             print("Found \(discoverySession.devices.count) devices")
             
-            // Safely collect device information
             var devices: [AVCaptureDevice] = []
             for device in discoverySession.devices {
                 print("Device: \(device.localizedName) (Type: \(device.deviceType), UniqueID: \(device.uniqueID))")
                 devices.append(device)
             }
             
-            // Update on main thread
             DispatchQueue.main.async {
                 self.availableCameras = devices
-                self.selectedCamera = devices.first
+                // Select the first camera by default
+                if let firstCamera = devices.first {
+                    self.selectedCameras.insert(firstCamera)
+                }
                 self.errorMessage = nil
             }
             
@@ -73,8 +68,50 @@ class CameraManager: ObservableObject {
             DispatchQueue.main.async {
                 self.errorMessage = error.localizedDescription
                 self.availableCameras = []
-                self.selectedCamera = nil
+                self.selectedCameras = []
             }
+        }
+    }
+    
+    func toggleCameraSelection(_ camera: AVCaptureDevice) {
+        if selectedCameras.contains(camera) {
+            selectedCameras.remove(camera)
+        } else {
+            selectedCameras.insert(camera)
+        }
+    }
+}
+
+struct CameraRow: View {
+    let camera: AVCaptureDevice
+    let isSelected: Bool
+    let onToggle: () -> Void
+    
+    var body: some View {
+        HStack {
+            Image(systemName: "video.fill")
+                .foregroundColor(.blue)
+                .frame(width: 24)
+            
+            VStack(alignment: .leading) {
+                Text(camera.localizedName)
+                    .font(.headline)
+                Text(camera.uniqueID)
+                    .font(.caption)
+                    .foregroundColor(.gray)
+            }
+            
+            Spacer()
+            
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.blue)
+            }
+        }
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onToggle()
         }
     }
 }
@@ -82,7 +119,6 @@ class CameraManager: ObservableObject {
 struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
     @State private var permissionGranted = false
-    @State private var showingError = false
     
     var body: some View {
         VStack {
@@ -110,21 +146,44 @@ struct ContentView: View {
                     .padding()
             }
             
-            Picker("Select Camera", selection: $cameraManager.selectedCamera) {
-                Text("No Camera").tag(nil as AVCaptureDevice?)
-                ForEach(cameraManager.availableCameras, id: \.uniqueID) { camera in
-                    Text(camera.localizedName).tag(camera as AVCaptureDevice?)
-                }
-            }
-            .pickerStyle(.menu)
-            .padding()
-            
-            if let selectedCamera = cameraManager.selectedCamera {
-                Text("Selected: \(selectedCamera.localizedName)")
+            if cameraManager.availableCameras.isEmpty {
+                Text("No cameras available")
+                    .foregroundColor(.gray)
                     .padding()
             } else {
-                Text("No camera selected")
-                    .padding()
+                List {
+                    ForEach(cameraManager.availableCameras, id: \.uniqueID) { camera in
+                        CameraRow(
+                            camera: camera,
+                            isSelected: cameraManager.selectedCameras.contains(camera),
+                            onToggle: { cameraManager.toggleCameraSelection(camera) }
+                        )
+                    }
+                }
+                .listStyle(PlainListStyle())
+                .frame(maxHeight: 300)
+            }
+            
+            if !cameraManager.selectedCameras.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Selected Cameras:")
+                        .font(.headline)
+                    
+                    ForEach(Array(cameraManager.selectedCameras), id: \.uniqueID) { camera in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(camera.localizedName)
+                                .font(.subheadline)
+                            Text("ID: \(camera.uniqueID)")
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .padding()
+                .background(Color.gray.opacity(0.1))
+                .cornerRadius(8)
+                .padding()
             }
         }
         .padding()
@@ -143,7 +202,6 @@ struct ContentView: View {
         case .authorized:
             print("Camera access authorized")
             permissionGranted = true
-            // Small delay to ensure UI is ready
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.cameraManager.discoverCameras()
             }
@@ -154,7 +212,6 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     self.permissionGranted = granted
                     if granted {
-                        // Small delay to ensure UI is ready
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                             self.cameraManager.discoverCameras()
                         }
