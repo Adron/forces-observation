@@ -7,77 +7,158 @@
 
 import SwiftUI
 import AVFoundation
+import OSLog
+
+enum CameraError: LocalizedError {
+    case notAuthorized
+    case noCamerasAvailable
+    case cameraInUse
+    case configurationFailed
+    case unknown(String)
+    
+    var errorDescription: String? {
+        switch self {
+        case .notAuthorized:
+            return "Camera access is not authorized. Please check your privacy settings."
+        case .noCamerasAvailable:
+            return "No cameras are available. Please check your connections."
+        case .cameraInUse:
+            return "Camera is currently in use by another application."
+        case .configurationFailed:
+            return "Failed to configure camera. Please try again."
+        case .unknown(let message):
+            return message
+        }
+    }
+}
 
 class CameraManager: ObservableObject {
     @Published var availableCameras: [AVCaptureDevice] = []
     @Published var selectedCameras: Set<AVCaptureDevice> = []
     @Published var errorMessage: String?
+    @Published var isDiscoveringCameras = false
+    
+    private let logger = Logger(subsystem: "dpm.force-observations", category: "CameraManager")
     
     init() {
-        print("CameraManager initialized")
+        logger.debug("CameraManager initialized")
     }
     
     func discoverCameras() {
-        print("Starting camera discovery...")
+        guard !isDiscoveringCameras else {
+            logger.debug("Camera discovery already in progress")
+            return
+        }
+        
+        isDiscoveringCameras = true
+        logger.debug("Starting camera discovery...")
         
         do {
             let status = AVCaptureDevice.authorizationStatus(for: .video)
-            print("Camera authorization status: \(status.rawValue)")
+            logger.debug("Camera authorization status: \(status.rawValue)")
             
-            guard status == .authorized else {
-                throw NSError(domain: "CameraManager", 
-                            code: 1, 
-                            userInfo: [NSLocalizedDescriptionKey: "Camera access not authorized. Current status: \(status.rawValue)"])
+            switch status {
+            case .notDetermined:
+                logger.debug("Requesting camera authorization...")
+                AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                    guard let self = self else { return }
+                    if granted {
+                        self.discoverAvailableCameras()
+                    } else {
+                        self.handleError(.notAuthorized)
+                    }
+                }
+            case .authorized:
+                discoverAvailableCameras()
+            case .denied, .restricted:
+                handleError(.notAuthorized)
+            @unknown default:
+                handleError(.unknown("Unknown authorization status"))
             }
-            
-            availableCameras = []
-            selectedCameras = []
-            
+        } catch {
+            handleError(.unknown(error.localizedDescription))
+        }
+    }
+    
+    private func discoverAvailableCameras() {
+        do {
             let deviceTypes: [AVCaptureDevice.DeviceType] = [
                 .builtInWideAngleCamera,
                 .external
             ]
             
-            print("Creating discovery session with device types: \(deviceTypes)")
+            logger.debug("Creating discovery session with device types: \(deviceTypes)")
             let discoverySession = AVCaptureDevice.DiscoverySession(
                 deviceTypes: deviceTypes,
                 mediaType: .video,
                 position: .unspecified
             )
             
-            print("Discovery session created successfully")
-            print("Found \(discoverySession.devices.count) devices")
+            logger.debug("Discovery session created successfully")
+            logger.debug("Found \(discoverySession.devices.count) devices")
+            
+            if discoverySession.devices.isEmpty {
+                handleError(.noCamerasAvailable)
+                return
+            }
             
             var devices: [AVCaptureDevice] = []
             for device in discoverySession.devices {
-                print("Device: \(device.localizedName) (Type: \(device.deviceType), UniqueID: \(device.uniqueID))")
-                devices.append(device)
+                logger.debug("Device: \(device.localizedName) (UniqueID: \(device.uniqueID))")
+                
+                // Check if camera is available
+                if device.isConnected && !device.isSuspended {
+                    devices.append(device)
+                } else {
+                    logger.warning("Camera \(device.localizedName) is not available (connected: \(device.isConnected), suspended: \(device.isSuspended))")
+                }
+            }
+            
+            if devices.isEmpty {
+                handleError(.noCamerasAvailable)
+                return
             }
             
             DispatchQueue.main.async {
                 self.availableCameras = devices
-                // Select the first camera by default
                 if let firstCamera = devices.first {
                     self.selectedCameras.insert(firstCamera)
                 }
                 self.errorMessage = nil
+                self.isDiscoveringCameras = false
             }
             
         } catch {
-            print("Error in discoverCameras: \(error)")
-            DispatchQueue.main.async {
-                self.errorMessage = error.localizedDescription
-                self.availableCameras = []
-                self.selectedCameras = []
-            }
+            handleError(.unknown(error.localizedDescription))
+        }
+    }
+    
+    private func handleError(_ error: CameraError) {
+        logger.error("Camera error: \(error.localizedDescription ?? "")")
+        DispatchQueue.main.async {
+            self.errorMessage = error.localizedDescription
+            self.availableCameras = []
+            self.selectedCameras = []
+            self.isDiscoveringCameras = false
         }
     }
     
     func toggleCameraSelection(_ camera: AVCaptureDevice) {
-        if selectedCameras.contains(camera) {
-            selectedCameras.remove(camera)
-        } else {
-            selectedCameras.insert(camera)
+        do {
+            // Try to lock the camera for configuration
+            try camera.lockForConfiguration()
+            defer { camera.unlockForConfiguration() }
+            
+            if selectedCameras.contains(camera) {
+                selectedCameras.remove(camera)
+                logger.debug("Deselected camera: \(camera.localizedName)")
+            } else {
+                selectedCameras.insert(camera)
+                logger.debug("Selected camera: \(camera.localizedName)")
+            }
+        } catch {
+            logger.error("Failed to configure camera \(camera.localizedName): \(error.localizedDescription)")
+            handleError(.configurationFailed)
         }
     }
 }
