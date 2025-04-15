@@ -29,9 +29,22 @@
 		F3F35C3F2DAEB4CD002ABC9A /* force-observationsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "force-observationsUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F3F35C542DAED88D002ABC9A /* Exceptions for "force-observations" folder in "force-observations" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F3F35C232DAEB4CB002ABC9A /* force-observations */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		F3F35C262DAEB4CB002ABC9A /* force-observations */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F3F35C542DAED88D002ABC9A /* Exceptions for "force-observations" folder in "force-observations" target */,
+			);
 			path = "force-observations";
 			sourceTree = "<group>";
 		};

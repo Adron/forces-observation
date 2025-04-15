@@ -39,7 +39,7 @@ class CameraManager: ObservableObject {
             ]
             
             print("Creating discovery session with device types: \(deviceTypes)")
-            let discoverySession = try AVCaptureDevice.DiscoverySession(
+            let discoverySession = AVCaptureDevice.DiscoverySession(
                 deviceTypes: deviceTypes,
                 mediaType: .video,
                 position: .unspecified
@@ -151,42 +151,110 @@ struct ContentView: View {
                     .foregroundColor(.gray)
                     .padding()
             } else {
-                List {
-                    ForEach(cameraManager.availableCameras, id: \.uniqueID) { camera in
-                        CameraRow(
-                            camera: camera,
-                            isSelected: cameraManager.selectedCameras.contains(camera),
-                            onToggle: { cameraManager.toggleCameraSelection(camera) }
-                        )
-                    }
-                }
-                .listStyle(PlainListStyle())
-                .frame(maxHeight: 300)
-            }
-            
-            if !cameraManager.selectedCameras.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Selected Cameras:")
-                        .font(.headline)
-                    
-                    ForEach(Array(cameraManager.selectedCameras), id: \.uniqueID) { camera in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(camera.localizedName)
-                                .font(.subheadline)
-                            Text("ID: \(camera.uniqueID)")
-                                .font(.caption)
-                                .foregroundColor(.gray)
+                HStack(alignment: .top, spacing: 20) {
+                    // Left column - Camera list
+                    VStack {
+                        Text("Available Cameras")
+                            .font(.headline)
+                            .padding(.bottom, 8)
+                        
+                        List {
+                            ForEach(cameraManager.availableCameras, id: \.uniqueID) { camera in
+                                CameraRow(
+                                    camera: camera,
+                                    isSelected: cameraManager.selectedCameras.contains(camera),
+                                    onToggle: { cameraManager.toggleCameraSelection(camera) }
+                                )
+                            }
                         }
-                        .padding(.vertical, 4)
+                        .listStyle(PlainListStyle())
                     }
+                    .frame(minWidth: 200, maxWidth: .infinity, maxHeight: 400)
+                    
+                    // Center column - Selected cameras
+                    VStack(alignment: .leading) {
+                        Text("Selected Cameras")
+                            .font(.headline)
+                            .padding(.bottom, 8)
+                        
+                        if !cameraManager.selectedCameras.isEmpty {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(Array(cameraManager.selectedCameras), id: \.uniqueID) { camera in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(camera.localizedName)
+                                                .font(.subheadline)
+                                            Text("ID: \(camera.uniqueID)")
+                                                .font(.caption)
+                                                .foregroundColor(.gray)
+                                        }
+                                        .padding(.vertical, 4)
+                                    }
+                                }
+                            }
+                            .frame(width: 250)
+                            .frame(maxHeight: 400)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
+                        } else {
+                            Text("No cameras selected")
+                                .foregroundColor(.gray)
+                                .frame(width: 250, height: 100)
+                                .background(Color.gray.opacity(0.1))
+                                .cornerRadius(8)
+                        }
+                    }
+                    .frame(width: 250)
+                    
+                    // Right column - Buttons
+                    VStack(spacing: 12) {
+                        Button(action: { /* Show cameras action */ }) {
+                            HStack {
+                                Image(systemName: "video.fill")
+                                Text("Show Cameras")
+                            }
+                            .frame(width: 150)
+                            .padding(.vertical, 8)
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        Button(action: { /* Enable forces vision action */ }) {
+                            HStack {
+                                Image(systemName: "eye.fill")
+                                Text("Enable Forces Vision")
+                            }
+                            .frame(width: 150)
+                            .padding(.vertical, 8)
+                            .background(Color.green)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        Button(action: { /* Show activity log action */ }) {
+                            HStack {
+                                Image(systemName: "list.bullet")
+                                Text("Show Activity Log")
+                            }
+                            .frame(width: 150)
+                            .padding(.vertical, 8)
+                            .background(Color.orange)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                    .frame(width: 150)
+                    .padding(.top, 8)
                 }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-                .padding()
+                .padding(.horizontal)
             }
         }
         .padding()
+        .frame(minWidth: 700, minHeight: 400)
         .onAppear {
             print("ContentView appeared")
             checkCameraPermission()
