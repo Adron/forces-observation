@@ -197,9 +197,172 @@ struct CameraRow: View {
     }
 }
 
+struct CameraWindowView: View {
+    let camera: AVCaptureDevice
+    @State private var session: AVCaptureSession?
+    @State private var previewLayer: AVCaptureVideoPreviewLayer?
+    @State private var logMessages: [String] = []
+    @State private var hasError = false
+    
+    var body: some View {
+        VStack {
+            // Camera Preview
+            if hasError {
+                Color.black
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let previewLayer = previewLayer {
+                CameraPreviewView(previewLayer: previewLayer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Text("Initializing camera...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            
+            // Log Area
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(logMessages, id: \.self) { message in
+                    Text(message)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.white)
+                }
+            }
+            .frame(height: 100)
+            .padding(8)
+            .background(Color.black)
+        }
+        .frame(minWidth: 640, minHeight: 480)
+        .onAppear {
+            setupCamera()
+        }
+        .onDisappear {
+            cleanupCamera()
+        }
+    }
+    
+    private func setupCamera() {
+        // Check if camera is still available
+        guard camera.isConnected else {
+            handleError("Camera is no longer connected")
+            return
+        }
+        
+        // Create a new session
+        let newSession = AVCaptureSession()
+        session = newSession
+        
+        // Configure session with safety checks
+        do {
+            // Try to lock the camera for configuration
+            try camera.lockForConfiguration()
+            defer { camera.unlockForConfiguration() }
+            
+            // Create input with safety check
+            let input = try AVCaptureDeviceInput(device: camera)
+            
+            // Check if we can add the input
+            guard newSession.canAddInput(input) else {
+                handleError("Cannot add camera input to session")
+                return
+            }
+            
+            // Add input with safety check
+            newSession.addInput(input)
+            
+            // Configure session with safety checks
+            if newSession.canSetSessionPreset(.high) {
+                newSession.sessionPreset = .high
+            } else if newSession.canSetSessionPreset(.medium) {
+                newSession.sessionPreset = .medium
+            } else {
+                newSession.sessionPreset = .low
+            }
+            
+            // Create preview layer with safety check
+            let previewLayer = AVCaptureVideoPreviewLayer(session: newSession)
+            self.previewLayer = previewLayer
+            
+            // Start the session on a background thread with safety checks
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.safeStartSession(newSession)
+            }
+            
+            addLogMessage("Camera initialized: \(camera.localizedName)")
+            
+        } catch {
+            handleError("Error setting up camera: \(error.localizedDescription)")
+        }
+    }
+    
+    private func safeStartSession(_ session: AVCaptureSession) {
+        // Add safety delay
+        Thread.sleep(forTimeInterval: 0.2)
+        
+        // Use a safety wrapper to catch any potential crashes
+        if !session.isRunning {
+            do {
+                try withExtendedLifetime(session) {
+                    session.startRunning()
+                }
+            } catch {
+                handleError("Failed to start camera session: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func cleanupCamera() {
+        // Stop the session safely
+        if let session = session {
+            DispatchQueue.global(qos: .userInitiated).async {
+                if session.isRunning {
+                    do {
+                        try withExtendedLifetime(session) {
+                            session.stopRunning()
+                        }
+                    } catch {
+                        print("Error stopping session: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+        
+        // Clear references
+        session = nil
+        previewLayer = nil
+    }
+    
+    private func handleError(_ message: String) {
+        hasError = true
+        addLogMessage("ERROR: \(message)")
+        cleanupCamera()
+    }
+    
+    private func addLogMessage(_ message: String) {
+        DispatchQueue.main.async {
+            logMessages.append(message)
+            if logMessages.count > 5 {
+                logMessages.removeFirst()
+            }
+        }
+    }
+}
+
+struct CameraPreviewView: NSViewRepresentable {
+    let previewLayer: AVCaptureVideoPreviewLayer
+    
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        view.layer = previewLayer
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
 struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
     @State private var permissionGranted = false
+    @State private var cameraWindows: [NSWindow] = []
     
     var body: some View {
         VStack {
@@ -289,7 +452,7 @@ struct ContentView: View {
                     
                     // Right column - Buttons
                     VStack(spacing: 12) {
-                        Button(action: { /* Show cameras action */ }) {
+                        Button(action: showCameraWindows) {
                             HStack {
                                 Image(systemName: "video.fill")
                                 Text("Show Cameras")
@@ -383,6 +546,30 @@ struct ContentView: View {
         print("Opening system settings...")
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera") {
             NSWorkspace.shared.open(url)
+        }
+    }
+    
+    private func showCameraWindows() {
+        // Close any existing windows
+        for window in cameraWindows {
+            window.close()
+        }
+        cameraWindows.removeAll()
+        
+        // Create new windows for each selected camera
+        for camera in cameraManager.selectedCameras {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 640, height: 580),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            
+            window.title = "\(camera.localizedName) - Camera Feed"
+            window.contentView = NSHostingView(rootView: CameraWindowView(camera: camera))
+            window.makeKeyAndOrderFront(nil)
+            
+            cameraWindows.append(window)
         }
     }
 }
