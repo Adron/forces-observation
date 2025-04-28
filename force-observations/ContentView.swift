@@ -9,11 +9,33 @@ import SwiftUI
 import AVFoundation
 import OSLog
 
+enum CameraType {
+    case physical
+    case virtual
+    case screenCapture
+    case streaming
+    case unknown
+    
+    var description: String {
+        switch self {
+        case .physical: return "Physical Camera"
+        case .virtual: return "Virtual Camera"
+        case .screenCapture: return "Screen Capture"
+        case .streaming: return "Streaming Camera"
+        case .unknown: return "Unknown Type"
+        }
+    }
+}
+
 enum CameraError: LocalizedError {
     case notAuthorized
     case noCamerasAvailable
     case cameraInUse
     case configurationFailed
+    case virtualCameraUnsupported
+    case cameraUnavailable
+    case streamingError
+    case screenCaptureError
     case unknown(String)
     
     var errorDescription: String? {
@@ -26,6 +48,14 @@ enum CameraError: LocalizedError {
             return "Camera is currently in use by another application."
         case .configurationFailed:
             return "Failed to configure camera. Please try again."
+        case .virtualCameraUnsupported:
+            return "This virtual camera is not fully supported. Some features may not work correctly."
+        case .cameraUnavailable:
+            return "Camera is currently unavailable. Please check the connection and try again."
+        case .streamingError:
+            return "Error with streaming camera. Please check your streaming software."
+        case .screenCaptureError:
+            return "Error with screen capture. Please check your screen recording settings."
         case .unknown(let message):
             return message
         }
@@ -37,11 +67,150 @@ class CameraManager: ObservableObject {
     @Published var selectedCameras: Set<AVCaptureDevice> = []
     @Published var errorMessage: String?
     @Published var isDiscoveringCameras = false
+    @Published var cameraTypes: [String: CameraType] = [:]
+    @Published var cameraWarnings: [String: String] = [:]
     
     private let logger = Logger(subsystem: "dpm.force-observations", category: "CameraManager")
     
+    // Expanded list of virtual camera identifiers
+    private let virtualCameraIdentifiers = [
+        "obs-virtual-camera",
+        "obs",
+        "virtual",
+        "screen",
+        "desktop",
+        "stream",
+        "capture",
+        "webcam",
+        "camera",
+        "cam",
+        "virtualcam",
+        "virtual-cam",
+        "virtualcamera",
+        "virtual-camera",
+        "screen-capture",
+        "screen-cam",
+        "screen-camera",
+        "stream-cam",
+        "stream-camera",
+        "streaming-cam",
+        "streaming-camera"
+    ]
+    
+    // Streaming software identifiers
+    private let streamingIdentifiers = [
+        "obs",
+        "streamlabs",
+        "xsplit",
+        "wirecast",
+        "vMix",
+        "restream",
+        "streamyard"
+    ]
+    
+    // Screen capture identifiers
+    private let screenCaptureIdentifiers = [
+        "screen",
+        "desktop",
+        "display",
+        "monitor",
+        "capture",
+        "recording"
+    ]
+    
     init() {
         logger.debug("CameraManager initialized")
+    }
+    
+    deinit {
+        cleanupAllCameras()
+    }
+    
+    func detectCameraType(_ device: AVCaptureDevice) -> CameraType {
+        let deviceName = device.localizedName.lowercased()
+        let uniqueID = device.uniqueID.lowercased()
+        
+        // Check for screen capture
+        for identifier in screenCaptureIdentifiers {
+            if deviceName.contains(identifier) || uniqueID.contains(identifier) {
+                return .screenCapture
+            }
+        }
+        
+        // Check for streaming cameras
+        for identifier in streamingIdentifiers {
+            if deviceName.contains(identifier) || uniqueID.contains(identifier) {
+                return .streaming
+            }
+        }
+        
+        // Check for virtual cameras
+        for identifier in virtualCameraIdentifiers {
+            if deviceName.contains(identifier) || uniqueID.contains(identifier) {
+                return .virtual
+            }
+        }
+        
+        // Check for physical camera indicators
+        if deviceName.contains("built-in") || deviceName.contains("face") || deviceName.contains("back") {
+            return .physical
+        }
+        
+        return .unknown
+    }
+    
+    func checkCameraHealth(_ device: AVCaptureDevice) -> (isHealthy: Bool, message: String?) {
+        // Check basic availability
+        guard device.isConnected else {
+            return (isHealthy: false, message: "Camera is not connected")
+        }
+        
+        // Check if camera is suspended
+        guard !device.isSuspended else {
+            return (isHealthy: false, message: "Camera is suspended")
+        }
+        
+        // Check if camera is in use
+        do {
+            try device.lockForConfiguration()
+            device.unlockForConfiguration()
+        } catch {
+            return (isHealthy: false, message: "Camera is in use by another application")
+        }
+        
+        // Check for virtual camera specific issues
+        let type = detectCameraType(device)
+        if type == .virtual || type == .streaming || type == .screenCapture {
+            // Additional checks for virtual cameras
+            if !device.hasMediaType(.video) {
+                return (isHealthy: false, message: "Virtual camera does not support video")
+            }
+            
+            // Check for minimum resolution support
+            let formats = device.formats
+            if formats.isEmpty {
+                return (isHealthy: false, message: "Virtual camera has no supported formats")
+            }
+        }
+        
+        return (isHealthy: true, message: nil)
+    }
+    
+    private func getCameraWarning(_ device: AVCaptureDevice) -> String? {
+        let type = detectCameraType(device)
+        
+        switch type {
+        case .virtual:
+            return "⚠️ Virtual Camera: Some features may be limited"
+        case .streaming:
+            return "⚠️ Streaming Camera: Ensure streaming software is running"
+        case .screenCapture:
+            return "⚠️ Screen Capture: Performance may be affected"
+        case .unknown:
+            return "⚠️ Unknown Camera Type: Use with caution"
+        default:
+            return nil
+        }
     }
     
     func discoverCameras() {
@@ -82,6 +251,7 @@ class CameraManager: ObservableObject {
     
     private func discoverAvailableCameras() {
         do {
+            // Configure discovery session with more specific device types
             let deviceTypes: [AVCaptureDevice.DeviceType] = [
                 .builtInWideAngleCamera,
                 .external
@@ -94,6 +264,9 @@ class CameraManager: ObservableObject {
                 position: .unspecified
             )
             
+            // Add a small delay to allow system to initialize
+            Thread.sleep(forTimeInterval: 0.1)
+            
             logger.debug("Discovery session created successfully")
             logger.debug("Found \(discoverySession.devices.count) devices")
             
@@ -104,14 +277,24 @@ class CameraManager: ObservableObject {
             
             var devices: [AVCaptureDevice] = []
             for device in discoverySession.devices {
-                logger.debug("Device: \(device.localizedName) (UniqueID: \(device.uniqueID))")
-                
-                // Check if camera is available
-                if device.isConnected && !device.isSuspended {
-                    devices.append(device)
-                } else {
-                    logger.warning("Camera \(device.localizedName) is not available (connected: \(device.isConnected), suspended: \(device.isSuspended))")
+                // Check camera health with explicit type annotation
+                let healthCheck: (isHealthy: Bool, message: String?) = checkCameraHealth(device)
+                if !healthCheck.isHealthy {
+                    logger.warning("Camera \(device.localizedName) health check failed: \(healthCheck.message ?? "Unknown reason")")
+                    continue
                 }
+                
+                // Detect camera type
+                let type = detectCameraType(device)
+                cameraTypes[device.uniqueID] = type
+                
+                // Get and store warning message
+                if let warning = getCameraWarning(device) {
+                    cameraWarnings[device.uniqueID] = warning
+                    logger.warning("\(warning) - \(device.localizedName)")
+                }
+                
+                devices.append(device)
             }
             
             if devices.isEmpty {
@@ -161,6 +344,28 @@ class CameraManager: ObservableObject {
             handleError(.configurationFailed)
         }
     }
+    
+    private func addLogMessage(_ message: String) {
+        logger.info("\(message)")
+        // This will be displayed in the camera window's log area
+    }
+    
+    func cleanupAllCameras() {
+        // Stop all camera sessions
+        for camera in selectedCameras {
+            do {
+                try camera.lockForConfiguration()
+                camera.unlockForConfiguration()
+            } catch {
+                logger.error("Error unlocking camera during cleanup: \(error.localizedDescription)")
+            }
+        }
+        
+        // Don't clear selections if we're still showing windows
+        if selectedCameras.isEmpty {
+            availableCameras.removeAll()
+        }
+    }
 }
 
 struct CameraRow: View {
@@ -199,10 +404,17 @@ struct CameraRow: View {
 
 struct CameraWindowView: View {
     let camera: AVCaptureDevice
+    @StateObject private var cameraManager = CameraManager()
     @State private var session: AVCaptureSession?
     @State private var previewLayer: AVCaptureVideoPreviewLayer?
     @State private var logMessages: [String] = []
     @State private var hasError = false
+    @State private var cameraType: CameraType = .unknown
+    @State private var showWarning = false
+    @State private var warningMessage: String = ""
+    @State private var retryCount = 0
+    @State private var maxRetries = 3
+    private let logger = Logger(subsystem: "dpm.force-observations", category: "CameraWindowView")
     
     var body: some View {
         VStack {
@@ -216,6 +428,16 @@ struct CameraWindowView: View {
             } else {
                 Text("Initializing camera...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            
+            // Warning Banner
+            if showWarning {
+                Text(warningMessage)
+                    .foregroundColor(.yellow)
+                    .padding(8)
+                    .background(Color.black.opacity(0.7))
+                    .cornerRadius(8)
+                    .padding(.horizontal)
             }
             
             // Log Area
@@ -232,10 +454,25 @@ struct CameraWindowView: View {
         }
         .frame(minWidth: 640, minHeight: 480)
         .onAppear {
+            checkCameraType()
             setupCamera()
         }
         .onDisappear {
             cleanupCamera()
+        }
+    }
+    
+    private func checkCameraType() {
+        // Remove the health check logging to resolve type ambiguity
+        cameraType = cameraManager.detectCameraType(camera)
+        if let warning = cameraManager.cameraWarnings[camera.uniqueID] {
+            warningMessage = warning
+            showWarning = true
+        }
+        
+        addLogMessage("Camera Type: \(cameraType.description)")
+        if showWarning {
+            addLogMessage(warningMessage)
         }
     }
     
@@ -304,8 +541,28 @@ struct CameraWindowView: View {
                     session.startRunning()
                 }
             } catch {
-                handleError("Failed to start camera session: \(error.localizedDescription)")
+                if retryCount < maxRetries {
+                    retryCount += 1
+                    addLogMessage("Retry attempt \(retryCount) of \(maxRetries)")
+                    Thread.sleep(forTimeInterval: 0.5)
+                    safeStartSession(session)
+                } else {
+                    handleVirtualCameraError(error)
+                }
             }
+        }
+    }
+    
+    private func handleVirtualCameraError(_ error: Error) {
+        switch cameraType {
+        case .virtual:
+            handleError("Virtual camera failed to start after \(maxRetries) attempts. Please check your virtual camera software.")
+        case .streaming:
+            handleError("Streaming camera failed to start. Please ensure your streaming software is running.")
+        case .screenCapture:
+            handleError("Screen capture failed to start. Please check your screen recording settings.")
+        default:
+            handleError("Failed to start camera session: \(error.localizedDescription)")
         }
     }
     
@@ -328,6 +585,14 @@ struct CameraWindowView: View {
         // Clear references
         session = nil
         previewLayer = nil
+        
+        // Unlock camera configuration
+        do {
+            try camera.lockForConfiguration()
+            camera.unlockForConfiguration()
+        } catch {
+            print("Error unlocking camera during cleanup: \(error.localizedDescription)")
+        }
     }
     
     private func handleError(_ message: String) {
@@ -363,6 +628,7 @@ struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
     @State private var permissionGranted = false
     @State private var cameraWindows: [NSWindow] = []
+    private let logger = Logger(subsystem: "dpm.force-observations", category: "ContentView")
     
     var body: some View {
         VStack {
@@ -503,6 +769,9 @@ struct ContentView: View {
             print("ContentView appeared")
             checkCameraPermission()
         }
+        .onDisappear {
+            cleanupAllWindows()
+        }
     }
     
     private func checkCameraPermission() {
@@ -549,13 +818,24 @@ struct ContentView: View {
         }
     }
     
-    private func showCameraWindows() {
-        // Close any existing windows
+    private func cleanupAllWindows() {
+        // Safely close all camera windows
         for window in cameraWindows {
-            window.close()
+            if window.isVisible {
+                // Remove delegate before closing to prevent callbacks
+                window.delegate = nil
+                window.close()
+            }
         }
+        
+        // Clear window list
         cameraWindows.removeAll()
         
+        // Clean up camera manager
+        cameraManager.cleanupAllCameras()
+    }
+    
+    private func showCameraWindows() {
         // Create new windows for each selected camera
         for camera in cameraManager.selectedCameras {
             let window = NSWindow(
@@ -567,10 +847,36 @@ struct ContentView: View {
             
             window.title = "\(camera.localizedName) - Camera Feed"
             window.contentView = NSHostingView(rootView: CameraWindowView(camera: camera))
-            window.makeKeyAndOrderFront(nil)
             
+            // Set up window delegate to handle window closing
+            let delegate = WindowDelegate { [cameraWindows] in
+                DispatchQueue.main.async {
+                    // Check if all windows are closed
+                    let allWindowsClosed = cameraWindows.allSatisfy { !$0.isVisible }
+                    if allWindowsClosed {
+                        self.cameraWindows.removeAll()
+                    }
+                }
+            }
+            window.delegate = delegate
+            
+            window.makeKeyAndOrderFront(nil)
             cameraWindows.append(window)
         }
+    }
+}
+
+// Add WindowDelegate class
+class WindowDelegate: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+    
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        super.init()
+    }
+    
+    func windowWillClose(_ notification: Notification) {
+        onClose()
     }
 }
 
